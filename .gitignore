@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .secrets.local
+
+# keep the env templates
+!.env.example
+!n8n/.env.example
+n8n/.env

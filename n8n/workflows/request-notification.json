@@ -1,0 +1,115 @@
+{
+  "id": "LLnotify0000001",
+  "name": "LendLoop: request notification",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "LLerrors0000001",
+    "saveManualExecutions": true
+  },
+  "nodes": [
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e01",
+      "name": "Loan status webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "6f3c3a0e-5d2b-4e0c-8a51-1e2d3c4b5a01",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop/loan-status",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e02",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "jsCode": "// Convex signs `${timestamp}.${rawBody}` with HMAC-SHA256.\n// Check it against the exact bytes we received, not a re-serialised copy.\nconst crypto = require('crypto');\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst ts = headers['x-lendloop-timestamp'];\nconst sig = headers['x-lendloop-signature'] || '';\nconst raw = item.binary && item.binary.data\n  ? Buffer.from(item.binary.data.data, 'base64').toString('utf8')\n  : JSON.stringify(item.json.body);\n\nlet valid = false;\nif (secret && ts && Math.abs(Date.now() / 1000 - Number(ts)) <= 300) {\n  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex');\n  const a = Buffer.from(expected);\n  const b = Buffer.from(sig);\n  valid = a.length === b.length && crypto.timingSafeEqual(a, b);\n}\n\nreturn [{ json: { valid, payload: valid ? JSON.parse(raw) : null } }];"
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e03",
+      "name": "Signature ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "b1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e04",
+      "name": "Reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 420],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\" } }}",
+        "options": { "responseCode": 401 }
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e05",
+      "name": "Skip duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 200],
+      "parameters": {
+        "jsCode": "// Convex retries if it doesn't get a 2xx. If our reply got lost after we\n// already notified, the retry carries the same key and we don't send twice.\nconst seen = $getWorkflowStaticData('global');\nseen.keys = seen.keys || {};\nconst weekAgo = Date.now() - 7 * 86400000;\nfor (const [k, t] of Object.entries(seen.keys)) if (t < weekAgo) delete seen.keys[k];\n\nconst p = $input.first().json.payload;\nconst duplicate = Boolean(seen.keys[p.key]);\nif (!duplicate) seen.keys[p.key] = Date.now();\nreturn [{ json: { ...p, duplicate } }];"
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e06",
+      "name": "Send notification (mock)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 200],
+      "parameters": {
+        "jsCode": "// Swap this node for Send Email / Slack in a real setup. It only gets the\n// recipient's first name and email plus the loan facts it has to mention.\nconst p = $input.first().json;\nif (p.duplicate) return [{ json: { delivered: false, reason: 'duplicate', key: p.key } }];\n\nconst lines = {\n  requested: `${p.recipient.firstName}, someone asked to borrow your ${p.toolName} (${p.startDate} to ${p.endDate}).`,\n  approved: `${p.recipient.firstName}, your request for the ${p.toolName} was approved. Pick-up from ${p.startDate}.`,\n  declined: `${p.recipient.firstName}, your request for the ${p.toolName} was declined.`,\n  cancelled: `${p.recipient.firstName}, a request for your ${p.toolName} was cancelled.`,\n  returned: `${p.recipient.firstName}, thanks for returning the ${p.toolName}.`,\n};\nconst message = lines[p.status] || `${p.recipient.firstName}, a loan for the ${p.toolName} changed to ${p.status}.`;\nconsole.log(`[lendloop] notify ${p.recipient.email}: ${message}`);\nreturn [{ json: { delivered: true, to: p.recipient.email, message, key: p.key } }];"
+      }
+    },
+    {
+      "id": "6b1f0a2e-1c11-4a0f-9c3e-0a1b2c3d4e07",
+      "name": "Ok",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1200, 200],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"delivered\": $json.delivered } }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Loan status webhook": { "main": [[{ "node": "Verify signature", "type": "main", "index": 0 }]] },
+    "Verify signature": { "main": [[{ "node": "Signature ok?", "type": "main", "index": 0 }]] },
+    "Signature ok?": {
+      "main": [
+        [{ "node": "Skip duplicates", "type": "main", "index": 0 }],
+        [{ "node": "Reject", "type": "main", "index": 0 }]
+      ]
+    },
+    "Skip duplicates": { "main": [[{ "node": "Send notification (mock)", "type": "main", "index": 0 }]] },
+    "Send notification (mock)": { "main": [[{ "node": "Ok", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {}
+}

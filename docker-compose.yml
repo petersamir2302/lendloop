@@ -1,0 +1,22 @@
+services:
+  n8n:
+    image: n8nio/n8n:1.110.1
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    env_file: n8n/.env
+    environment:
+      GENERIC_TIMEZONE: ${TZ:-UTC}
+      # Code nodes read the shared secrets and Convex URL from the environment,
+      # so nothing secret ends up in the exported workflow JSON.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      CODE_ENABLE_STDOUT: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+volumes:
+  n8n_data:

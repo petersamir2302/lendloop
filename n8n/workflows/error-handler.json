@@ -1,0 +1,57 @@
+{
+  "id": "LLerrors0000001",
+  "name": "LendLoop: error handler",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    {
+      "id": "8d3b2c4a-3e33-4c2b-9e5a-2c3d4e5f6a01",
+      "name": "When a LendLoop workflow fails",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "parameters": {}
+    },
+    {
+      "id": "8d3b2c4a-3e33-4c2b-9e5a-2c3d4e5f6a02",
+      "name": "Sign error report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "jsCode": "// Report the failure to Convex so it shows up in the app's admin view,\n// not only in n8n's execution list.\nconst crypto = require('crypto');\nconst e = $input.first().json;\nconst report = {\n  executionId: String(e.execution?.id ?? `no-id-${Date.now()}`),\n  workflow: e.workflow?.name ?? 'unknown workflow',\n  message: e.execution?.error?.message ?? 'unknown error',\n};\nconsole.error(`[lendloop] ${report.workflow} failed: ${report.message}`);\nconst body = JSON.stringify(report);\nconst ts = Math.floor(Date.now() / 1000).toString();\nconst signature = 'sha256=' + crypto.createHmac('sha256', $env.LENDLOOP_CONVEX_SECRET).update(`${ts}.${body}`).digest('hex');\nreturn [{ json: { url: `${$env.LENDLOOP_CONVEX_SITE_URL}/automation/workflow-error`, body, ts, signature } }];"
+      }
+    },
+    {
+      "id": "8d3b2c4a-3e33-4c2b-9e5a-2c3d4e5f6a03",
+      "name": "Report to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-LendLoop-Timestamp", "value": "={{ $json.ts }}" },
+            { "name": "X-LendLoop-Signature", "value": "={{ $json.signature }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": { "timeout": 15000 }
+      }
+    }
+  ],
+  "connections": {
+    "When a LendLoop workflow fails": { "main": [[{ "node": "Sign error report", "type": "main", "index": 0 }]] },
+    "Sign error report": { "main": [[{ "node": "Report to Convex", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {}
+}
