@@ -1,7 +1,12 @@
-import { v } from "convex/values";
+import { type Infer, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 import { loanStatuses } from "./schema";
 import { daysBetween, today } from "./lib/dates";
 import { sign } from "./lib/signing";
@@ -24,36 +29,64 @@ function recipientFor(loan: Doc<"loans">, newStatus: Doc<"loans">["status"]) {
  * Upsert keyed by `key`. Calling it twice with the same key updates one row,
  * which is what makes n8n retries safe.
  */
-export const recordEvent = internalMutation({
-  args: {
-    key: v.string(),
-    loanId: v.optional(v.id("loans")),
-    kind: v.union(v.literal("notification"), v.literal("reminder"), v.literal("workflow_error")),
-    status: v.union(v.literal("pending"), v.literal("sent"), v.literal("failed")),
-    detail: v.optional(v.string()),
-    countAttempt: v.optional(v.boolean()),
-  },
-  handler: async (ctx, { countAttempt, ...e }) => {
-    const existing = await ctx.db
-      .query("automationEvents")
-      .withIndex("by_key", (q) => q.eq("key", e.key))
-      .unique();
-    if (existing) {
-      // A late failure report must not overwrite a success.
-      if (existing.status === "sent" && e.status !== "sent") return existing._id;
-      await ctx.db.patch(existing._id, {
-        status: e.status,
-        detail: e.detail,
-        attempts: existing.attempts + (countAttempt ? 1 : 0),
-        updatedAt: Date.now(),
-      });
-      return existing._id;
-    }
-    return await ctx.db.insert("automationEvents", {
-      ...e,
-      attempts: countAttempt ? 1 : 0,
+const eventArgs = {
+  key: v.string(),
+  loanId: v.optional(v.id("loans")),
+  kind: v.union(v.literal("notification"), v.literal("reminder"), v.literal("workflow_error")),
+  status: v.union(v.literal("pending"), v.literal("sent"), v.literal("failed")),
+  detail: v.optional(v.string()),
+  countAttempt: v.optional(v.boolean()),
+};
+const eventInput = v.object(eventArgs);
+type EventInput = Infer<typeof eventInput>;
+
+async function upsertEvent(ctx: MutationCtx, { countAttempt, ...e }: EventInput) {
+  const existing = await ctx.db
+    .query("automationEvents")
+    .withIndex("by_key", (q) => q.eq("key", e.key))
+    .unique();
+  if (existing) {
+    // A late failure report must not overwrite a success.
+    if (existing.status === "sent" && e.status !== "sent") return existing._id;
+    await ctx.db.patch(existing._id, {
+      status: e.status,
+      detail: e.detail,
+      attempts: existing.attempts + (countAttempt ? 1 : 0),
       updatedAt: Date.now(),
     });
+    return existing._id;
+  }
+  return await ctx.db.insert("automationEvents", {
+    ...e,
+    attempts: countAttempt ? 1 : 0,
+    updatedAt: Date.now(),
+  });
+}
+
+export const recordEvent = internalMutation({
+  args: eventInput,
+  handler: (ctx, args) => upsertEvent(ctx, args),
+});
+
+/**
+ * Write-back from the reminder workflow. The loan id arrives as a plain string
+ * from outside, so it's checked here instead of trusting the validator to
+ * reject it (which would surface as a 500).
+ */
+export const recordReminder = internalMutation({
+  args: {
+    reminderKey: v.string(),
+    loanId: v.string(),
+    status: v.union(v.literal("sent"), v.literal("failed")),
+    detail: v.optional(v.string()),
+  },
+  handler: async (ctx, { reminderKey, loanId, status, detail }): Promise<"ok" | "unknown_loan"> => {
+    const id = ctx.db.normalizeId("loans", loanId);
+    if (!id || !(await ctx.db.get(id)) || !reminderKey.startsWith(`reminder:${id}:`)) {
+      return "unknown_loan";
+    }
+    await upsertEvent(ctx, { key: reminderKey, loanId: id, kind: "reminder", status, detail, countAttempt: true });
+    return "ok";
   },
 });
 

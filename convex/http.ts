@@ -1,6 +1,5 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
 import { httpAction } from "./_generated/server";
 import { verify } from "./lib/signing";
 
@@ -56,21 +55,20 @@ http.route({
     const { reminderKey, loanId, status, detail } = input;
     if (
       typeof reminderKey !== "string" ||
-      !reminderKey.startsWith(`reminder:${loanId}:`) ||
+      typeof loanId !== "string" ||
       (status !== "sent" && status !== "failed")
     ) {
       return json({ error: "bad request" }, 400);
     }
 
     // Same key on a retry -> same row. Safe to call as often as n8n likes.
-    await ctx.runMutation(internal.automation.recordEvent, {
-      key: reminderKey,
-      loanId: loanId as Id<"loans">,
-      kind: "reminder",
+    const result = await ctx.runMutation(internal.automation.recordReminder, {
+      reminderKey,
+      loanId,
       status,
       detail: typeof detail === "string" ? detail.slice(0, 300) : undefined,
-      countAttempt: true,
     });
+    if (result === "unknown_loan") return json({ error: "unknown loan" }, 404);
     return json({ ok: true });
   }),
 });
