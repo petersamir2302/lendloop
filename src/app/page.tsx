@@ -24,7 +24,7 @@ export default function Home() {
         </p>
         <div className="mt-6">
           <SignedOut>
-            <SignInButton mode="modal" forceRedirectUrl="/app">
+            <SignInButton mode="modal" forceRedirectUrl="/app" signUpForceRedirectUrl="/app">
               <button className="btn-primary">Sign in to lend or borrow</button>
             </SignInButton>
           </SignedOut>
